@@ -1,0 +1,369 @@
+#!/usr/bin/env bash
+
+# --- Enable strict mode for safety and fail-fast behavior ---
+set -euo pipefail
+trap 'echo "Error at line $LINENO: $BASH_COMMAND"' ERR
+
+# shellcheck disable=SC2034
+VERSION="1.0.0"
+
+export PATH="/opt/homebrew/bin:$PATH"
+
+TAG_TYPE="highest"
+OUTFILE=".scan.images.json"
+SORT_BY=""
+FILTER=""
+QUIET=0
+VERBOSE=0
+DOCKER_ENV_LOADED=0
+DOCKER_CONFIGS=()
+
+EMOJI_START="🚀"
+EMOJI_FOUND="📦"
+EMOJI_DONE="✅"
+EMOJI_WARN="⚠️"
+EMOJI_INFO="ℹ️"
+EMOJI_WRITE="📝"
+EMOJI_STATS="📊"
+COLOR_RESET="\033[0m"
+COLOR_GREEN="\033[32m"
+COLOR_CYAN="\033[36m"
+COLOR_YELLOW="\033[33m"
+
+human_size() {
+  num=${1:-0}
+  if ((num < 1024)); then
+    echo "${num} B"
+    return
+  fi
+  units=(KB MB GB TB PB)
+  for u in "${units[@]}"; do
+    num=$(awk "BEGIN {printf \"%.2f\", $num/1024}")
+    [[ $(awk "BEGIN {print ($num < 1024)}") -eq 1 ]] && {
+      echo "$num $u"
+      return
+    }
+  done
+  echo "${num} PB"
+}
+
+show_help() {
+  cat <<EOF
+Usage: $(basename "$0") [options]
+
+  --tag-type   highest|latest|both   Which tag(s) to export per repo (default: highest)
+  --sort       name|tag|last_updated|size  Sort output by field
+  --filter     string                Filter images (case-insensitive, matches name, description, or tag)
+  --outfile    file.json             Output file (default: .scan.images.json)
+  --quiet                            Suppress progress output
+  --verbose                          Show extra debug/progress info
+  --help                             Show this help
+  --version                          Show version
+
+Requires .env file in script directory with DOCKERHUB_REPO set.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  --tag-type)
+    TAG_TYPE="$2"
+    shift 2
+    ;;
+  --sort)
+    SORT_BY="$2"
+    shift 2
+    ;;
+  --filter)
+    FILTER="$2"
+    shift 2
+    ;;
+  --outfile)
+    OUTFILE="$2"
+    shift 2
+    ;;
+  --quiet)
+    QUIET=1
+    shift
+    ;;
+  --verbose)
+    VERBOSE=1
+    shift
+    ;;
+  --help)
+    show_help
+    exit 0
+    ;;
+  --version)
+    echo "$(basename "$0") v$VERSION"
+    exit 0
+    ;;
+  *)
+    echo "❌ Unknown argument: $1"
+    show_help
+    exit 1
+    ;;
+  esac
+done
+
+# --- Config sourcing priority ---
+# 1. $HOME/.docker-config.env
+# 2. .docker-config.env (in script directory)
+# 3. .env (legacy support, in script directory)
+
+DOCKER_ENV_LOADED=0
+
+if [[ -f "$HOME/.docker-config.env" ]]; then
+  CONFIG_PATH="$HOME/.docker-config.env"
+  # shellcheck disable=SC1090
+  source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$CONFIG_PATH")
+  DOCKER_ENV_LOADED=1
+  DOCKER_CONFIGS+=("$CONFIG_PATH")
+fi
+
+if [[ -f "./.docker-config.env" ]]; then
+  CONFIG_PATH="./.docker-config.env"
+  # shellcheck disable=SC1090
+  source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$CONFIG_PATH")
+  DOCKER_ENV_LOADED=1
+  DOCKER_CONFIGS+=("$CONFIG_PATH")
+fi
+
+if [[ -f "./.env" ]]; then
+  CONFIG_PATH="./.env"
+  # shellcheck disable=SC1090
+  source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$CONFIG_PATH")
+  DOCKER_ENV_LOADED=1
+  DOCKER_CONFIGS+=("$CONFIG_PATH")
+fi
+
+if [[ $DOCKER_ENV_LOADED -eq 0 ]]; then
+  echo "❌ No Docker environment config found (.docker-config.env or .env)"
+  exit 1
+fi
+
+if [[ ${VERBOSE:-0} -eq 1 ]]; then
+  echo -e "${COLOR_CYAN}${EMOJI_INFO}  Loaded Docker config from:"
+  for path in "${DOCKER_CONFIGS[@]}"; do
+    echo -e "${COLOR_YELLOW}    $path${COLOR_RESET}"
+  done
+  echo
+fi
+
+USER="${DOCKERHUB_REPO:-}"
+if [[ -z "$USER" ]]; then
+  echo "❌ DOCKERHUB_REPO not set in .docker-config.env or .env"
+  exit 1
+fi
+NAMESPACE="$USER"
+
+print_info() { [[ $QUIET -eq 0 ]] && echo -e "${COLOR_CYAN}${EMOJI_INFO}  $*${COLOR_RESET}"; }
+print_warn() { [[ $QUIET -eq 0 ]] && echo -e "${COLOR_YELLOW}${EMOJI_WARN}  $*${COLOR_RESET}"; }
+print_good() { [[ $QUIET -eq 0 ]] && echo -e "${COLOR_GREEN}${EMOJI_DONE}  $*${COLOR_RESET}"; }
+
+get_all_repos_json() {
+  local page=1
+  while :; do
+    data=$(curl -s "https://hub.docker.com/v2/repositories/$NAMESPACE/?page_size=100&page=$page")
+    count=$(echo "$data" | jq '.results | length')
+    echo "$data" | jq -c '.results[]'
+    [[ $count -lt 100 ]] && break
+    page=$((page + 1))
+  done
+}
+
+get_tags_obj() {
+  local repo="$1"
+  curl -s "https://hub.docker.com/v2/repositories/$NAMESPACE/$repo/tags/?page_size=100" |
+    jq -c '.results[] | select(.name | type == "string")'
+}
+
+get_highest_tag_obj() {
+  local repo="$1"
+  get_tags_obj "$repo" |
+    jq -c 'select(.name | test("^[0-9]+(\\.[0-9]+)*$"))' |
+    sort -t'"' -k8,8Vr | head -1
+}
+
+get_latest_tag_obj() {
+  local repo="$1"
+  get_tags_obj "$repo" |
+    jq -c 'select(.name == "latest")' |
+    head -1
+}
+
+get_any_tag_obj() {
+  local repo="$1"
+  get_tags_obj "$repo" | head -1
+}
+
+START_TIME="$(date '+%Y-%m-%d %H:%M:%S')"
+print_info "$EMOJI_START Docker Hub image export started at $START_TIME"
+
+# Get all repos (JSON blobs per line)
+mapfile -t REPOS < <(get_all_repos_json)
+
+# Optional: filter before tag lookup
+FILTERED_REPOS=()
+for repo_obj in "${REPOS[@]}"; do
+  repo_name=$(echo "$repo_obj" | jq -r '.name')
+  repo_desc=$(echo "$repo_obj" | jq -r '.description // empty')
+  if [[ -n "$FILTER" ]]; then
+    if echo "$repo_name" | grep -qi "$FILTER" || echo "$repo_desc" | grep -qi "$FILTER"; then
+      FILTERED_REPOS+=("$repo_obj")
+    fi
+  else
+    FILTERED_REPOS+=("$repo_obj")
+  fi
+done
+
+TOTAL=${#FILTERED_REPOS[@]}
+print_info "$EMOJI_FOUND Found $TOTAL repositories in '$NAMESPACE'"
+
+out_array=()
+n=1
+for repo_obj in "${FILTERED_REPOS[@]}"; do
+  repo=$(echo "$repo_obj" | jq -r '.name')
+  ns=$(echo "$repo_obj" | jq -r '.namespace')
+  desc=$(echo "$repo_obj" | jq -r '.description // ""')
+  last_updated=$(echo "$repo_obj" | jq -r '.last_updated // ""')
+  date_registered=$(echo "$repo_obj" | jq -r '.date_registered // ""')
+  [[ $QUIET -eq 0 ]] && echo -ne "\r\033[K   -> Processing image $n/$TOTAL: $repo"
+
+  add_tag_json() {
+    local tag_obj="$1"
+    [[ -z "$tag_obj" || "$tag_obj" == "null" ]] && return
+    tag=$(echo "$tag_obj" | jq -r '.name')
+    tag_last=$(echo "$tag_obj" | jq -r '.last_updated // empty')
+    tag_size=$(echo "$tag_obj" | jq -r '.full_size // 0')
+    tag_size_human=$(human_size "$tag_size")
+    jq -nc \
+      --arg name "$repo" \
+      --arg ns "$ns" \
+      --arg image "$ns/$repo" \
+      --arg desc "$desc" \
+      --arg last_updated "$last_updated" \
+      --arg date_registered "$date_registered" \
+      --arg tag "$tag" \
+      --arg tag_last_updated "$tag_last" \
+      --argjson full_size "${tag_size:-0}" \
+      --arg tag_size_human "$tag_size_human" \
+      '{name:$name, namespace:$ns, image:$image, description:$desc, last_updated:$last_updated, date_registered:$date_registered, tag:$tag, tag_last_updated:$tag_last_updated, full_size:$full_size, full_size_human:$tag_size_human}'
+  }
+
+  case "$TAG_TYPE" in
+  highest)
+    [[ $VERBOSE -eq 1 ]] && echo -e "${COLOR_YELLOW}DEBUG: get_highest_tag_obj for $repo${COLOR_RESET}"
+    tag_obj=""
+    tag_obj=$(get_highest_tag_obj "$repo" 2>/dev/null || true)
+    if [[ -z "$tag_obj" || "$tag_obj" == "null" ]]; then
+      [[ $VERBOSE -eq 1 ]] && echo -e "${COLOR_YELLOW}DEBUG: get_any_tag_obj (fallback) for $repo${COLOR_RESET}"
+      tag_obj=$(get_any_tag_obj "$repo" 2>/dev/null || true)
+    fi
+    if [[ -n "${tag_obj:-}" && "$tag_obj" != "null" ]]; then
+      out_array+=("$(add_tag_json "$tag_obj")")
+    else
+      [[ $VERBOSE -eq 1 ]] && echo -e "${COLOR_YELLOW}DEBUG: No tag found for $repo${COLOR_RESET}"
+    fi
+    ;;
+  latest)
+    [[ $VERBOSE -eq 1 ]] && echo -e "${COLOR_YELLOW}DEBUG: get_latest_tag_obj for $repo${COLOR_RESET}"
+    tag_obj=""
+    tag_obj=$(get_latest_tag_obj "$repo" 2>/dev/null || true)
+    if [[ -z "$tag_obj" || "$tag_obj" == "null" ]]; then
+      [[ $VERBOSE -eq 1 ]] && echo -e "${COLOR_YELLOW}DEBUG: get_any_tag_obj (fallback) for $repo${COLOR_RESET}"
+      tag_obj=$(get_any_tag_obj "$repo" 2>/dev/null || true)
+    fi
+    if [[ -n "${tag_obj:-}" && "$tag_obj" != "null" ]]; then
+      out_array+=("$(add_tag_json "$tag_obj")")
+    else
+      [[ $VERBOSE -eq 1 ]] && echo -e "${COLOR_YELLOW}DEBUG: No tag found for $repo${COLOR_RESET}"
+    fi
+    ;;
+  both)
+    [[ $VERBOSE -eq 1 ]] && echo -e "${COLOR_YELLOW}DEBUG: get_highest_tag_obj for $repo${COLOR_RESET}"
+    tag_obj1=""
+    tag_obj1=$(get_highest_tag_obj "$repo" 2>/dev/null || true)
+    if [[ -z "$tag_obj1" || "$tag_obj1" == "null" ]]; then
+      [[ $VERBOSE -eq 1 ]] && echo -e "${COLOR_YELLOW}DEBUG: get_any_tag_obj (highest fallback) for $repo${COLOR_RESET}"
+      tag_obj1=$(get_any_tag_obj "$repo" 2>/dev/null || true)
+    fi
+
+    [[ $VERBOSE -eq 1 ]] && echo -e "${COLOR_YELLOW}DEBUG: get_latest_tag_obj for $repo${COLOR_RESET}"
+    tag_obj2=""
+    tag_obj2=$(get_latest_tag_obj "$repo" 2>/dev/null || true)
+    if [[ -z "$tag_obj2" || "$tag_obj2" == "null" ]]; then
+      [[ $VERBOSE -eq 1 ]] && echo -e "${COLOR_YELLOW}DEBUG: get_any_tag_obj (latest fallback) for $repo${COLOR_RESET}"
+      tag_obj2=$(get_any_tag_obj "$repo" 2>/dev/null || true)
+    fi
+
+    # Highest tag
+    if [[ -n "${tag_obj1:-}" && "$tag_obj1" != "null" ]]; then
+      out_array+=("$(add_tag_json "$tag_obj1")")
+    else
+      [[ $VERBOSE -eq 1 ]] && echo -e "${COLOR_YELLOW}DEBUG: No highest tag found for $repo${COLOR_RESET}"
+    fi
+
+    # Latest tag, but only if different from highest
+    tag1=$(echo "$tag_obj1" | jq -r '.name // empty' 2>/dev/null)
+    tag2=$(echo "$tag_obj2" | jq -r '.name // empty' 2>/dev/null)
+    if [[ -n "${tag_obj2:-}" && "$tag_obj2" != "null" && "$tag2" != "$tag1" ]]; then
+      out_array+=("$(add_tag_json "$tag_obj2")")
+    elif [[ $VERBOSE -eq 1 ]]; then
+      [[ -z "$tag2" ]] && echo -e "${COLOR_YELLOW}DEBUG: No latest tag found for $repo${COLOR_RESET}"
+      [[ "$tag2" == "$tag1" ]] && echo -e "${COLOR_YELLOW}DEBUG: latest == highest for $repo, skipping duplicate${COLOR_RESET}"
+    fi
+    ;;
+  *)
+    print_warn "Unknown tag-type: $TAG_TYPE"
+    exit 1
+    ;;
+  esac
+
+  ((n++))
+done
+[[ $QUIET -eq 0 ]] && echo
+
+END_TIME="$(date '+%Y-%m-%d %H:%M:%S')"
+print_good "$EMOJI_DONE Export complete at $END_TIME"
+print_info "$EMOJI_WRITE Writing output to $OUTFILE ..."
+
+# Build JSON array and sort/filter post-tag phase if needed
+json=$(printf "%s\n" "${out_array[@]}" | grep -v '^null$' | grep -v '^$' | jq -s '.')
+
+if [[ -n "$SORT_BY" ]]; then
+  case "$SORT_BY" in
+  name | tag | last_updated | full_size | date_registered)
+    json=$(echo "$json" | jq "sort_by(.$SORT_BY)")
+    ;;
+  *)
+    print_warn "Unknown sort field: $SORT_BY"
+    ;;
+  esac
+fi
+
+echo "$json" | jq '.' >"$OUTFILE"
+exported=$(echo "$json" | jq 'length')
+
+# --- Stats block ---
+if [[ $QUIET -eq 0 ]]; then
+  total_size=$(echo "$json" | jq '[.[].full_size] | add')
+  total_size_hr=$(human_size "$total_size")
+  unique_repos=$(echo "$json" | jq -r '.[].name' | sort | uniq | wc -l | tr -d ' ')
+  largest=$(echo "$json" | jq -r 'max_by(.full_size) | "\(.name):\(.tag) (\(.full_size_human))"')
+  smallest=$(echo "$json" | jq -r 'min_by(.full_size) | "\(.name):\(.tag) (\(.full_size_human))"')
+  newest=$(echo "$json" | jq -r 'max_by(.tag_last_updated) | "\(.name):\(.tag) (\(.tag_last_updated))"')
+  oldest=$(echo "$json" | jq -r 'min_by(.tag_last_updated) | "\(.name):\(.tag) (\(.tag_last_updated))"')
+  echo -e "${COLOR_CYAN}${EMOJI_STATS} Export stats:${COLOR_RESET}"
+  echo "• Total tags exported:   $exported"
+  echo "• Unique repositories:   $unique_repos"
+  echo "• Total exported size:   $total_size_hr"
+  echo "• Largest image:         $largest"
+  echo "• Smallest image:        $smallest"
+  echo "• Newest tag updated:    $newest"
+  echo "• Oldest tag updated:    $oldest"
+fi
+
+print_good "Done! $exported tags exported."
+
+exit 0
