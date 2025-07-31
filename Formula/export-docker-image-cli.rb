@@ -2,7 +2,7 @@ class ExportDockerImageCli < Formula
   desc "Export, audit, and report your Docker Hub images with zero hassle"
   homepage "https://github.com/raymonepping/export-docker-image-cli"
   url "https://github.com/raymonepping/homebrew-export-docker-image-cli/archive/refs/tags/v1.0.0.tar.gz"
-  sha256 "PUT_THE_REAL_SHA256_HERE" # Replace with your tarball’s SHA256
+  sha256 "cf1fc7dd3206a9d5dbac89c1688077e1546eb1c5533eb5bffd856ba1b1da77b8" # Replace with your tarball’s SHA256
   license "MIT"
   version "1.0.0"
 
