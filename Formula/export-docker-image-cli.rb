@@ -10,7 +10,7 @@ class ExportDockerImageCli < Formula
   depends_on "jq"
 
   def install
-    bin.install "bin/export_docker_image.sh" => "export_docker_image"
+    bin.install "bin/export_docker_image" => "export_docker_image"
   end
 
   def caveats
