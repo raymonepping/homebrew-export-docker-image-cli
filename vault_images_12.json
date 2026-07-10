@@ -1,0 +1,38 @@
+[
+  {
+    "name": "vault-radar-cli",
+    "namespace": "repping",
+    "image": "repping/vault-radar-cli",
+    "description": "",
+    "last_updated": "2025-07-30T13:41:35.019352Z",
+    "date_registered": "2025-07-30T09:49:50.197073Z",
+    "tag": "latest",
+    "tag_last_updated": "2025-07-30T13:41:33.823862Z",
+    "full_size": 35994557,
+    "full_size_human": "34.33 MB"
+  },
+  {
+    "name": "vault_radar_container",
+    "namespace": "repping",
+    "image": "repping/vault_radar_container",
+    "description": "",
+    "last_updated": "2025-07-30T16:27:08.306405Z",
+    "date_registered": "2025-07-30T09:01:15.738759Z",
+    "tag": "latest",
+    "tag_last_updated": "2025-07-30T16:27:07.179365Z",
+    "full_size": 36652396,
+    "full_size_human": "34.95 MB"
+  },
+  {
+    "name": "vault_radar_container.slim",
+    "namespace": "repping",
+    "image": "repping/vault_radar_container.slim",
+    "description": "",
+    "last_updated": "2025-07-30T16:27:17.522301Z",
+    "date_registered": "2025-07-30T09:15:09.034685Z",
+    "tag": "latest",
+    "tag_last_updated": "2025-07-30T16:27:16.327689Z",
+    "full_size": 35994584,
+    "full_size_human": "34.33 MB"
+  }
+]

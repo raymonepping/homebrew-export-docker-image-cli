@@ -1,0 +1,26 @@
+[
+  {
+    "name": "bakeray-backend",
+    "namespace": "repping",
+    "image": "repping/bakeray-backend",
+    "description": "",
+    "last_updated": "2025-04-28T16:52:10.154425Z",
+    "date_registered": "2025-04-28T16:31:20.700014Z",
+    "tag": "3.0.0",
+    "tag_last_updated": "2025-04-28T16:52:09.077822Z",
+    "full_size": 88838478,
+    "full_size_human": "84.72 MB"
+  },
+  {
+    "name": "bakeray-frontend",
+    "namespace": "repping",
+    "image": "repping/bakeray-frontend",
+    "description": "",
+    "last_updated": "2025-04-28T16:51:15.959633Z",
+    "date_registered": "2025-04-28T16:37:48.161362Z",
+    "tag": "latest",
+    "tag_last_updated": "2025-04-28T16:51:14.901746Z",
+    "full_size": 180214274,
+    "full_size_human": "171.87 MB"
+  }
+]
